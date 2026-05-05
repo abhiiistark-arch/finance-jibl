@@ -267,10 +267,13 @@ def create_app() -> Flask:
     return app
 
 
-def main():
+def main() -> None:
     configure_logging()
-    app = create_app()
     app.run(host="0.0.0.0", port=5000, debug=False)
+
+
+# WSGI / platform entry: gunicorn "app.app:app" or `app` script in pyproject.toml
+app = create_app()
 
 
 if __name__ == "__main__":
