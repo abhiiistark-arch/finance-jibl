@@ -1,0 +1,1 @@
+"""PDF → table extraction helpers."""
