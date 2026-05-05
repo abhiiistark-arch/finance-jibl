@@ -1,6 +1,6 @@
 """
-Extract tables from PDFs; pick FIRST table matching commission schema via fuzzy columns.
-Uses pdfplumber first, PyMuPDF find_tables fallback.
+Extract tables from PDFs: every page/block whose columns match the commission schema
+(≥5 fuzzy-matched columns) contributes rows; pdfplumber is tried before PyMuPDF.
 """
 
 from __future__ import annotations
@@ -202,7 +202,11 @@ TABLE_PRESETS: list[dict[str, Any] | None] = [
 def _iter_tables_pdfplumber(path: Path) -> Iterator[SchemaMatch]:
     with pdfplumber.open(str(path)) as pdf:
         for page in pdf.pages:
+            # Avoid the same logical table yielded once per preset (duplicate rows).
+            page_done = False
             for preset in TABLE_PRESETS:
+                if page_done:
+                    break
                 if preset:
                     rows = page.extract_tables(table_settings=preset)
                 else:
@@ -214,6 +218,8 @@ def _iter_tables_pdfplumber(path: Path) -> Iterator[SchemaMatch]:
                     if hit is None:
                         continue
                     yield hit
+                    page_done = True
+                    break
 
 
 def _iter_tables_pymupdf(path: Path) -> Iterator[SchemaMatch]:
@@ -239,13 +245,15 @@ def _iter_tables_pymupdf(path: Path) -> Iterator[SchemaMatch]:
                 if hit is None:
                     continue
                 yield hit
+                break
     finally:
         doc.close()
 
 
 def extract_valid_table_rows(pdf_source: Path | bytes, source_name: str = "") -> ParsedTableResult:
     """
-    Return FIRST table whose columns match schema (≥5 / 9). Rows keyed by canonical labels.
+    Return all body rows from every extractable table that matches the schema (≥5 / 9 columns),
+    in page order. Rows keyed by canonical labels.
     """
     tmp_path: Path | None = None
     if isinstance(pdf_source, bytes):
@@ -267,14 +275,21 @@ def extract_valid_table_rows(pdf_source: Path | bytes, source_name: str = "") ->
     try:
         for engine, iterate in pipelines:
             try:
+                rows_out: list[dict[str, object]] = []
+                matched_headers: dict[str, str] = {}
+                table_index = 0
                 for headers_list, body, pdf_to_expected in iterate(path):
+                    table_index += 1
+                    if not matched_headers:
+                        matched_headers = pdf_to_expected
                     logger.info(
-                        "Using first valid table: file=%s engine=%s cols=%s",
+                        "Valid schema table %d: file=%s engine=%s cols=%s body_rows=%d",
+                        table_index,
                         name,
                         engine,
                         list(pdf_to_expected.values()),
+                        len(body),
                     )
-                    rows_out: list[dict[str, object]] = []
                     for r in body:
                         if _row_starts_secondary_table_section(r):
                             logger.debug(
@@ -291,7 +306,15 @@ def extract_valid_table_rows(pdf_source: Path | bytes, source_name: str = "") ->
                             continue
                         rows_out.append(row_dict)
 
-                    return ParsedTableResult(matched_headers=pdf_to_expected, rows=rows_out)
+                if table_index > 0:
+                    logger.info(
+                        "Extracted %d data row(s) from %d schema table(s) via %s file=%s",
+                        len(rows_out),
+                        table_index,
+                        engine,
+                        name,
+                    )
+                    return ParsedTableResult(matched_headers=matched_headers, rows=rows_out)
 
                 logger.warning("No qualifying table extracted with pipeline %s (%s)", engine, name)
 
